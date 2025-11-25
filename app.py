@@ -11,21 +11,6 @@ import time
 from io import BytesIO
 
 # --- CONFIGURATION ---
-st.set_page_config(
-    page_title="Dognosis Financial Report",
-    page_icon="🐶",
-    layout="wide"
-)
-
-# Load API Key from secrets
-try:
-    API_KEY = st.secrets["GOOGLE_API_KEY"]
-except FileNotFoundError:
-    st.error("Secrets file not found. Please ensure .streamlit/secrets.toml exists.")
-    st.stop()
-
-# --- STYLES ---
-st.markdown("""
     <style>
     .stButton>button {
         width: 100%;
@@ -57,62 +42,64 @@ def process_files(kodo_file, trans_file, progress_bar, status_text):
     errors = []
     
     # 1. LOAD KODO PAY
-    try:
-        status_text.text("Loading Kodo Pay data...")
-        kodo_df = pd.read_csv(kodo_file)
-        kodo_debit = kodo_df[kodo_df['Dr/Cr'] == 'Dr'].copy()
-        
-        for _, row in kodo_debit.iterrows():
-            narration = str(row.get('Narration on Kodo Pay', ''))
-            comments = str(row.get('Maker Comments', ''))
+    if kodo_file:
+        try:
+            status_text.text("Loading Kodo Pay data...")
+            kodo_df = pd.read_csv(kodo_file)
+            kodo_debit = kodo_df[kodo_df['Dr/Cr'] == 'Dr'].copy()
             
-            # FILTER: Skip LQ Prepaid
-            if 'lq prepaid' in narration.lower() or 'lq prepaid' in comments.lower():
-                continue
+            for _, row in kodo_debit.iterrows():
+                narration = str(row.get('Narration on Kodo Pay', ''))
+                comments = str(row.get('Maker Comments', ''))
                 
-            transactions.append({
-                'source': 'Kodo-Pay',
-                'date': str(row.get('Date (IST)', '')),
-                'amount': float(row.get('Txn Amount (INR)', 0)),
-                'category': str(row.get('Category', 'Uncategorized')),
-                'narration': narration,
-                'comments': comments,
-                'maker_name': str(row.get('Maker Name', '')),
-                'description': f"{narration} | {row.get('Category', '')} | {comments} | {row.get('Maker Name', '')}"
-            })
-    except Exception as e:
-        errors.append(f"Kodo Pay Error: {str(e)}")
+                # FILTER: Skip LQ Prepaid
+                if 'lq prepaid' in narration.lower() or 'lq prepaid' in comments.lower():
+                    continue
+                    
+                transactions.append({
+                    'source': 'Kodo-Pay',
+                    'date': str(row.get('Date (IST)', '')),
+                    'amount': float(row.get('Txn Amount (INR)', 0)),
+                    'category': str(row.get('Category', 'Uncategorized')),
+                    'narration': narration,
+                    'comments': comments,
+                    'maker_name': str(row.get('Maker Name', '')),
+                    'description': f"{narration} | {row.get('Category', '')} | {comments} | {row.get('Maker Name', '')}"
+                })
+        except Exception as e:
+            errors.append(f"Kodo Pay Error: {str(e)}")
 
     # 2. LOAD TRANSACTIONS
-    try:
-        status_text.text("Loading Transactions data...")
-        trans_df = pd.read_csv(trans_file)
-        # Filter out FUNDING/CREDIT
-        if 'Txn Category' in trans_df.columns:
-            trans_debit = trans_df[~trans_df['Txn Category'].isin(['FUNDING', 'CARD_CREDIT'])].copy()
-        else:
-            trans_debit = trans_df.copy()
-            
-        for _, row in trans_debit.iterrows():
-            merchant = str(row.get('Merchant/Narration', ''))
-            
-            # FILTER: Skip LQ Prepaid
-            if 'lq prepaid' in merchant.lower():
-                continue
+    if trans_file:
+        try:
+            status_text.text("Loading Transactions data...")
+            trans_df = pd.read_csv(trans_file)
+            # Filter out FUNDING/CREDIT
+            if 'Txn Category' in trans_df.columns:
+                trans_debit = trans_df[~trans_df['Txn Category'].isin(['FUNDING', 'CARD_CREDIT'])].copy()
+            else:
+                trans_debit = trans_df.copy()
                 
-            transactions.append({
-                'source': 'Transactions',
-                'date': str(row.get('Txn Date', '')),
-                'amount': float(row.get('Txn Amount (Rs.)', 0)),
-                'category': str(row.get('Expense Category', 'Uncategorized')),
-                'merchant': merchant,
-                'narration': merchant,
-                'comments': str(row.get('Notes', '')),
-                'cardholder': f"{row.get('Cardholder First Name', '')} {row.get('Cardholder Last Name', '')}",
-                'description': f"{merchant} | {row.get('Expense Category', '')} | {row.get('Notes', '')} | {row.get('Cardholder First Name', '')}"
-            })
-    except Exception as e:
-        errors.append(f"Transactions Error: {str(e)}")
+            for _, row in trans_debit.iterrows():
+                merchant = str(row.get('Merchant/Narration', ''))
+                
+                # FILTER: Skip LQ Prepaid
+                if 'lq prepaid' in merchant.lower():
+                    continue
+                    
+                transactions.append({
+                    'source': 'Transactions',
+                    'date': str(row.get('Txn Date', '')),
+                    'amount': float(row.get('Txn Amount (Rs.)', 0)),
+                    'category': str(row.get('Expense Category', 'Uncategorized')),
+                    'merchant': merchant,
+                    'narration': merchant,
+                    'comments': str(row.get('Notes', '')),
+                    'cardholder': f"{row.get('Cardholder First Name', '')} {row.get('Cardholder Last Name', '')}",
+                    'description': f"{merchant} | {row.get('Expense Category', '')} | {row.get('Notes', '')} | {row.get('Cardholder First Name', '')}"
+                })
+        except Exception as e:
+            errors.append(f"Transactions Error: {str(e)}")
 
     if not transactions:
         return None, errors
@@ -458,6 +445,68 @@ def create_excel(categorized_data):
     buffer.seek(0)
     return buffer
 
+def get_gemini_2_0():
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash-exp", # Using experimental 2.0 model for QC
+        google_api_key=API_KEY,
+        temperature=0.1,
+        max_retries=2,
+        request_timeout=60
+    )
+
+def reclassify_fallbacks(categorized_data, progress_bar, status_text):
+    fallbacks = [t for t in categorized_data if t.get('method') == 'fallback' or t.get('confidence') == 'low']
+    
+    if not fallbacks:
+        return categorized_data, 0
+        
+    status_text.text(f"Running QC on {len(fallbacks)} uncertain transactions with Gemini 2.0 Flash...")
+    llm = get_gemini_2_0()
+    
+    batch_size = 5
+    total_batches = (len(fallbacks) + batch_size - 1) // batch_size
+    
+    system_prompt = """You are a SENIOR financial analyst.
+Re-evaluate these uncertain transactions.
+CRITICAL:
+1. "Mechanical Hardware" = CAPEX.
+2. Vishwanatha + Uncategorized + >1000 = CAPEX.
+3. Use context from description/narration to assign best category.
+
+Respond with JSON: {"type": "CAPEX" or "OPEX", "category": "assigned category", "reasoning": "brief explanation"}"""
+
+    reclassified_count = 0
+    
+    for i in range(0, len(fallbacks), batch_size):
+        batch = fallbacks[i:i+batch_size]
+        current_batch = i // batch_size + 1
+        progress_bar.progress(current_batch / total_batches)
+        
+        batch_prompt = "Re-classify:\n\n"
+        for idx, txn in enumerate(batch):
+            batch_prompt += f"{idx+1}. ₹{txn['amount']:,.2f} | Cat: {txn['category']} | Desc: {txn['description'][:100]}\n"
+            
+        try:
+            response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=batch_prompt)])
+            content = response.content.strip().replace('```json', '').replace('```', '').strip()
+            results = json.loads(content)
+            
+            for txn, result in zip(batch, results):
+                # Update the original transaction object in the main list
+                txn['expense_type'] = result.get('type', 'OPEX')
+                txn['category'] = result.get('category', txn['category'])
+                txn['reasoning'] = f"QC (Gemini 2.0): {result.get('reasoning', '')}"
+                txn['method'] = 'qc-gemini-2.0'
+                txn['confidence'] = 'high'
+                reclassified_count += 1
+                
+        except Exception as e:
+            print(f"QC Error: {e}")
+            
+        time.sleep(1)
+        
+    return categorized_data, reclassified_count
+
 # --- MAIN APP ---
 
 def main():
@@ -470,7 +519,8 @@ def main():
         st.header("Settings")
         st.info("✅ API Key Configured")
         st.info("✅ Hardware Logic Active")
-        st.info("✅ Gemini 2.5 Flash")
+        st.info("✅ Gemini 2.5 Flash (Primary)")
+        st.info("✨ Gemini 2.0 Flash (QC)")
         
     # Main Content
     st.title("🐶 Dognosis Financial Spend Report")
@@ -483,8 +533,8 @@ def main():
         trans_file = st.file_uploader("Transactions Sheet (CSV)", type=['csv'])
         
     if st.button("Analyze Expenses", type="primary"):
-        if not kodo_file or not trans_file:
-            st.error("Please upload both CSV files.")
+        if not kodo_file and not trans_file:
+            st.error("Please upload at least one CSV file.")
             return
             
         # Progress UI
@@ -499,6 +549,11 @@ def main():
                 st.error(err)
         
         if categorized_data:
+            # Run QC
+            categorized_data, qc_count = reclassify_fallbacks(categorized_data, progress_bar, status_text)
+            if qc_count > 0:
+                st.success(f"QC Complete: Re-classified {qc_count} transactions with Gemini 2.0 Flash!")
+            
             # Store in session state
             st.session_state.categorized_data = categorized_data
             status_text.success("Analysis Complete!")
