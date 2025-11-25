@@ -11,6 +11,24 @@ import time
 from io import BytesIO
 
 # --- CONFIGURATION ---
+st.set_page_config(
+    page_title="Dognosis Financial Report",
+    page_icon="🐶",
+    layout="wide"
+)
+
+# Load API Key from secrets (Environment Variable)
+try:
+    API_KEY = st.secrets["GOOGLE_API_KEY"]
+except FileNotFoundError:
+    st.error("Secrets not found. Please configure GOOGLE_API_KEY in Streamlit secrets.")
+    st.stop()
+except KeyError:
+    st.error("GOOGLE_API_KEY not found in secrets.")
+    st.stop()
+
+# --- STYLES ---
+st.markdown("""
     <style>
     .stButton>button {
         width: 100%;
@@ -32,10 +50,44 @@ def get_llm():
     return ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         google_api_key=API_KEY,
-        temperature=0.1,
+        temperature=0,
         max_retries=2,
         request_timeout=60
     )
+
+def generate_categories(transactions, status_text):
+    status_text.text("Senior Analyst: Generating expense categories...")
+    llm = get_llm()
+    
+    # Prepare a sample of descriptions for the model
+    descriptions = [t['description'] for t in transactions[:50]] # Analyze first 50 for speed
+    desc_text = "\n".join(descriptions)
+    
+    system_prompt = (
+        "You are a Senior Financial Analyst for a hardware biotech startup. Your task is to analyze transaction descriptions and generate a comprehensive list of expense categories.\n\n"
+        "REQUIREMENTS:\n"
+        "1. Categories should be specific enough to be meaningful but broad enough to group similar expenses\n"
+        "2. Every transaction should fit into exactly one category — avoid overlapping categories\n"
+        "3. Aim for 15-25 categories that cover all transactions\n"
+        "4. Category names should be clear and professional (e.g., 'Lab Equipment' not 'Science Stuff')\n\n"
+        "THINK ABOUT:\n"
+        "- What is this company spending money on?\n"
+        "- What would a CFO want to see broken down in a monthly report?\n"
+        "- Are there natural groupings based on purpose, department, or accounting treatment?\n\n"
+        "OUTPUT:\n"
+        "Return ONLY a JSON array of category strings. No explanation, no markdown.\n"
+        "Example: [\"Lab Equipment\", \"Software & Cloud\", \"Travel & Transport\", \"Team Meals\"]"
+    )
+    
+    try:
+        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=desc_text)])
+        content = response.content.strip().replace('```json', '').replace('```', '').strip()
+        categories = json.loads(content)
+        return categories
+    except Exception as e:
+        print(f"Category Gen Error: {e}")
+        return ["Lab Supplies", "Office Supplies", "Travel", "Meals", "Software", "Hardware", "Consulting", "Shipping", "Rent", "Utilities", "Other"]
+
 
 def process_files(kodo_file, trans_file, progress_bar, status_text):
     transactions = []
@@ -129,27 +181,33 @@ def process_files(kodo_file, trans_file, progress_bar, status_text):
 
     # LLM Analysis
     if llm_needed:
+        # 3a. Generate Categories (Senior Analyst)
+        categories_list = generate_categories(llm_needed, status_text)
+        category_str = ", ".join(categories_list)
+        status_text.text(f"Senior Analyst defined {len(categories_list)} categories.")
+        
         llm = get_llm()
         batch_size = 5
         total_batches = (len(llm_needed) + batch_size - 1) // batch_size
         
-        system_prompt = """You are a financial analyst for a HARDWARE COMPANY.
-CRITICAL BUSINESS RULES:
-1. ALL "Mechanical Hardware" is CAPEX.
-2. Vishwanatha + Uncategorized + >1000 -> CAPEX.
-
-Categorize as CAPEX or OPEX. If "Uncategorized", assign a proper category.
-
-CAPEX: One-time investments (Equipment, machinery, electronics, IT, construction)
-OPEX: Regular/recurring (Rent, utilities, supplies, food, travel, salaries)
-
-Respond with JSON: {"type": "CAPEX" or "OPEX", "category": "assigned category", "reasoning": "brief explanation"}"""
-
+        system_prompt = (
+            "You are a financial analyst for a HARDWARE COMPANY.\n"
+            "CRITICAL BUSINESS RULES:\n"
+            "1. ALL \"Mechanical Hardware\" is CAPEX.\n"
+            "2. Vishwanatha + Uncategorized + >1000 -> CAPEX.\n\n"
+            "Categorize as CAPEX or OPEX. If \"Uncategorized\", assign a proper category.\n\n"
+            "CAPEX: One-time investments (Equipment, machinery, electronics, IT, construction)\n"
+            "OPEX: Regular/recurring (Rent, utilities, supplies, food, travel, salaries)\n\n"
+            "CATEGORY — Assign the single best-fit category from this list:\n"
+            f"{category_str}\n\n"
+            "Respond with JSON: {\"type\": \"CAPEX\" or \"OPEX\", \"category\": \"assigned category\", \"reasoning\": \"brief explanation\"}"
+        )
+        
         for i in range(0, len(llm_needed), batch_size):
             batch = llm_needed[i:i+batch_size]
             current_batch = i // batch_size + 1
             
-            status_text.text(f"LLM Analyzing batch {current_batch}/{total_batches}...")
+            status_text.text(f"Junior Analyst classifying batch {current_batch}/{total_batches}...")
             progress_bar.progress(current_batch / total_batches)
             
             batch_prompt = "Categorize:\n\n"
@@ -163,7 +221,6 @@ Respond with JSON: {"type": "CAPEX" or "OPEX", "category": "assigned category", 
                 
                 for txn, result in zip(batch, results):
                     assigned_cat = result.get('category', txn['category'])
-                    note = f" (LLM assigned: {assigned_cat})" if txn['category'] == 'Uncategorized' and assigned_cat != 'Uncategorized' else ""
                     
                     categorized.append({
                         **txn,
@@ -171,8 +228,8 @@ Respond with JSON: {"type": "CAPEX" or "OPEX", "category": "assigned category", 
                         'category': assigned_cat,
                         'original_category': txn['category'],
                         'confidence': 'llm',
-                        'reasoning': f"LLM: {result.get('reasoning', '')}{note}",
-                        'method': 'pure-llm'
+                        'reasoning': result.get('reasoning', ''),
+                        'method': 'junior-analyst'
                     })
             except Exception as e:
                 for txn in batch:
@@ -445,14 +502,7 @@ def create_excel(categorized_data):
     buffer.seek(0)
     return buffer
 
-def get_gemini_2_0():
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash-exp", # Using experimental 2.0 model for QC
-        google_api_key=API_KEY,
-        temperature=0.1,
-        max_retries=2,
-        request_timeout=60
-    )
+
 
 def reclassify_fallbacks(categorized_data, progress_bar, status_text):
     fallbacks = [t for t in categorized_data if t.get('method') == 'fallback' or t.get('confidence') == 'low']
@@ -460,20 +510,21 @@ def reclassify_fallbacks(categorized_data, progress_bar, status_text):
     if not fallbacks:
         return categorized_data, 0
         
-    status_text.text(f"Running QC on {len(fallbacks)} uncertain transactions with Gemini 2.0 Flash...")
-    llm = get_gemini_2_0()
+    status_text.text(f"Running QC on {len(fallbacks)} uncertain transactions with Senior Analyst...")
+    llm = get_llm()
     
     batch_size = 5
     total_batches = (len(fallbacks) + batch_size - 1) // batch_size
     
-    system_prompt = """You are a SENIOR financial analyst.
-Re-evaluate these uncertain transactions.
-CRITICAL:
-1. "Mechanical Hardware" = CAPEX.
-2. Vishwanatha + Uncategorized + >1000 = CAPEX.
-3. Use context from description/narration to assign best category.
-
-Respond with JSON: {"type": "CAPEX" or "OPEX", "category": "assigned category", "reasoning": "brief explanation"}"""
+    system_prompt = (
+        "You are a Senior Financial Analyst (QC).\n"
+        "Re-evaluate these uncertain transactions.\n"
+        "CRITICAL:\n"
+        "1. \"Mechanical Hardware\" = CAPEX.\n"
+        "2. Vishwanatha + Uncategorized + >1000 = CAPEX.\n"
+        "3. Use context from description/narration to assign best category.\n\n"
+        "Respond with JSON: {\"type\": \"CAPEX\" or \"OPEX\", \"category\": \"assigned category\", \"reasoning\": \"brief explanation\"}"
+    )
 
     reclassified_count = 0
     
@@ -482,7 +533,7 @@ Respond with JSON: {"type": "CAPEX" or "OPEX", "category": "assigned category", 
         current_batch = i // batch_size + 1
         progress_bar.progress(current_batch / total_batches)
         
-        batch_prompt = "Re-classify:\n\n"
+        batch_prompt = "Re-evaluate these transactions:\n\n"
         for idx, txn in enumerate(batch):
             batch_prompt += f"{idx+1}. ₹{txn['amount']:,.2f} | Cat: {txn['category']} | Desc: {txn['description'][:100]}\n"
             
@@ -495,8 +546,8 @@ Respond with JSON: {"type": "CAPEX" or "OPEX", "category": "assigned category", 
                 # Update the original transaction object in the main list
                 txn['expense_type'] = result.get('type', 'OPEX')
                 txn['category'] = result.get('category', txn['category'])
-                txn['reasoning'] = f"QC (Gemini 2.0): {result.get('reasoning', '')}"
-                txn['method'] = 'qc-gemini-2.0'
+                txn['reasoning'] = f"QC (Senior Analyst): {result.get('reasoning', '')}"
+                txn['method'] = 'qc-senior'
                 txn['confidence'] = 'high'
                 reclassified_count += 1
                 
@@ -519,8 +570,7 @@ def main():
         st.header("Settings")
         st.info("✅ API Key Configured")
         st.info("✅ Hardware Logic Active")
-        st.info("✅ Gemini 2.5 Flash (Primary)")
-        st.info("✨ Gemini 2.0 Flash (QC)")
+        st.info("✅ Gemini 2.5 Flash (All Roles)")
         
     # Main Content
     st.title("🐶 Dognosis Financial Spend Report")
@@ -552,7 +602,7 @@ def main():
             # Run QC
             categorized_data, qc_count = reclassify_fallbacks(categorized_data, progress_bar, status_text)
             if qc_count > 0:
-                st.success(f"QC Complete: Re-classified {qc_count} transactions with Gemini 2.0 Flash!")
+                st.success(f"QC Complete: Re-classified {qc_count} transactions with Senior Analyst!")
             
             # Store in session state
             st.session_state.categorized_data = categorized_data
@@ -586,7 +636,8 @@ def main():
             file_name=f"Dognosis_Spend_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
-            use_container_width=True
+            use_container_width=True,
+            key="download_report_btn"
         )
         
         # 3. Category Analysis (now persistent after download)
