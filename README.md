@@ -26,6 +26,11 @@ An intelligent financial analysis tool tailored for hardware companies. It categ
     streamlit run app.py
     ```
 
+## 🚀 Deployment
+
+Want to share this with your team?
+See [DEPLOYMENT.md](DEPLOYMENT.md) for instructions on how to host this on Streamlit Community Cloud.
+
 ## 📂 Project Structure
 
 -   `app.py`: Main Streamlit application.

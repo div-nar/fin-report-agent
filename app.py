@@ -200,14 +200,18 @@ def create_excel(categorized_data):
     
     # Styles
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True)
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    title_font = Font(size=16, bold=True, color="1F4E78")
+    subtitle_font = Font(size=12, bold=True)
+    total_font = Font(bold=True, size=11)
     currency_fmt = '₹#,##0.00'
-    
-    # 1. Executive Summary
-    ws = wb.active
-    ws.title = "Executive Summary"
-    ws['A1'] = "DOGNOSIS FINANCIAL SPEND REPORT"
-    ws['A1'].font = Font(size=16, bold=True)
+    percent_fmt = '0.0%'
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
     
     capex = [t for t in categorized_data if t['expense_type'] == 'CAPEX']
     opex = [t for t in categorized_data if t['expense_type'] == 'OPEX']
@@ -215,8 +219,19 @@ def create_excel(categorized_data):
     capex_amt = sum(t['amount'] for t in capex)
     opex_amt = sum(t['amount'] for t in opex)
     
-    ws['A4'] = "Overview"
-    ws['A4'].font = Font(bold=True, size=12)
+    # === SHEET 1: EXECUTIVE SUMMARY ===
+    ws = wb.active
+    ws.title = "Executive Summary"
+    
+    ws['A1'] = "DOGNOSIS FINANCIAL SPEND REPORT"
+    ws['A1'].font = title_font
+    ws.merge_cells('A1:D1')
+    
+    ws['A2'] = f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}"
+    ws['A2'].font = Font(size=10, italic=True)
+    
+    ws['A4'] = "FINANCIAL OVERVIEW"
+    ws['A4'].font = subtitle_font
     
     summary_data = [
         ["Metric", "Value"],
@@ -225,47 +240,218 @@ def create_excel(categorized_data):
         ["CAPEX Total", capex_amt],
         ["OPEX Total", opex_amt],
         ["CAPEX %", capex_amt/total_amt if total_amt else 0],
+        ["OPEX %", opex_amt/total_amt if total_amt else 0],
     ]
     
     for r, row in enumerate(summary_data, 5):
-        ws.cell(r, 1, row[0])
-        ws.cell(r, 2, row[1])
-        if r > 5 and r < 10: ws.cell(r, 2).number_format = currency_fmt
-        if r == 10: ws.cell(r, 2).number_format = '0.0%'
-
-    # 2. CAPEX Sheet
-    ws_capex = wb.create_sheet("CAPEX")
+        for c, val in enumerate(row, 1):
+            cell = ws.cell(r, c, val)
+            cell.border = border
+            if r == 5:
+                cell.fill = header_fill
+                cell.font = header_font
+            if c == 2 and r > 6 and r < 10:
+                cell.number_format = currency_fmt
+            if c == 2 and r >= 10:
+                cell.number_format = percent_fmt
+    
+    ws.column_dimensions['A'].width = 25
+    ws.column_dimensions['B'].width = 20
+    
+    # === SHEET 2: CAPEX STATEMENT ===
+    ws_capex = wb.create_sheet("CAPEX Statement")
+    
+    ws_capex['A1'] = "CAPITAL EXPENDITURES (CAPEX)"
+    ws_capex['A1'].font = title_font
+    ws_capex.merge_cells('A1:G1')
+    
+    ws_capex['A2'] = f"Total CAPEX: ₹{capex_amt:,.2f}"
+    ws_capex['A2'].font = subtitle_font
+    
     headers = ['Date', 'Source', 'Category', 'Amount', 'Description', 'Method', 'Reasoning']
     for c, h in enumerate(headers, 1):
-        cell = ws_capex.cell(1, c, h)
+        cell = ws_capex.cell(4, c, h)
         cell.fill = header_fill
         cell.font = header_font
+        cell.border = border
+    
+    # Group by category for subtotals
+    capex_df = pd.DataFrame(capex)
+    current_row = 5
+    
+    if not capex_df.empty:
+        for category in sorted(capex_df['category'].unique()):
+            cat_txns = capex_df[capex_df['category'] == category]
+            
+            for _, txn in cat_txns.iterrows():
+                ws_capex.cell(current_row, 1, txn['date']).border = border
+                ws_capex.cell(current_row, 2, txn['source']).border = border
+                ws_capex.cell(current_row, 3, txn['category']).border = border
+                cell_amt = ws_capex.cell(current_row, 4, txn['amount'])
+                cell_amt.number_format = currency_fmt
+                cell_amt.border = border
+                ws_capex.cell(current_row, 5, txn['description'][:80]).border = border
+                ws_capex.cell(current_row, 6, txn['method']).border = border
+                ws_capex.cell(current_row, 7, txn['reasoning'][:80]).border = border
+                current_row += 1
+            
+            # Subtotal
+            subtotal = cat_txns['amount'].sum()
+            ws_capex.cell(current_row, 3, f"{category} Subtotal").font = total_font
+            cell_sub = ws_capex.cell(current_row, 4, subtotal)
+            cell_sub.number_format = currency_fmt
+            cell_sub.font = total_font
+            cell_sub.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+            current_row += 1
         
-    for r, txn in enumerate(capex, 2):
-        ws_capex.cell(r, 1, txn['date'])
-        ws_capex.cell(r, 2, txn['source'])
-        ws_capex.cell(r, 3, txn['category'])
-        ws_capex.cell(r, 4, txn['amount']).number_format = currency_fmt
-        ws_capex.cell(r, 5, txn['description'])
-        ws_capex.cell(r, 6, txn['method'])
-        ws_capex.cell(r, 7, txn['reasoning'])
-
-    # 3. OPEX Sheet
-    ws_opex = wb.create_sheet("OPEX")
+        # Grand Total
+        current_row += 1
+        ws_capex.cell(current_row, 3, "GRAND TOTAL").font = Font(bold=True, size=12)
+        cell_grand = ws_capex.cell(current_row, 4, capex_amt)
+        cell_grand.number_format = currency_fmt
+        cell_grand.font = Font(bold=True, size=12)
+        cell_grand.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    
+    ws_capex.column_dimensions['A'].width = 12
+    ws_capex.column_dimensions['B'].width = 15
+    ws_capex.column_dimensions['C'].width = 20
+    ws_capex.column_dimensions['D'].width = 15
+    ws_capex.column_dimensions['E'].width = 40
+    ws_capex.column_dimensions['F'].width = 15
+    ws_capex.column_dimensions['G'].width = 40
+    
+    # === SHEET 3: OPEX STATEMENT ===
+    ws_opex = wb.create_sheet("OPEX Statement")
+    
+    ws_opex['A1'] = "OPERATING EXPENDITURES (OPEX)"
+    ws_opex['A1'].font = title_font
+    ws_opex.merge_cells('A1:G1')
+    
+    ws_opex['A2'] = f"Total OPEX: ₹{opex_amt:,.2f}"
+    ws_opex['A2'].font = subtitle_font
+    
     for c, h in enumerate(headers, 1):
-        cell = ws_opex.cell(1, c, h)
+        cell = ws_opex.cell(4, c, h)
         cell.fill = header_fill
         cell.font = header_font
+        cell.border = border
+    
+    # Group by category for subtotals
+    opex_df = pd.DataFrame(opex)
+    current_row = 5
+    
+    if not opex_df.empty:
+        for category in sorted(opex_df['category'].unique()):
+            cat_txns = opex_df[opex_df['category'] == category]
+            
+            for _, txn in cat_txns.iterrows():
+                ws_opex.cell(current_row, 1, txn['date']).border = border
+                ws_opex.cell(current_row, 2, txn['source']).border = border
+                ws_opex.cell(current_row, 3, txn['category']).border = border
+                cell_amt = ws_opex.cell(current_row, 4, txn['amount'])
+                cell_amt.number_format = currency_fmt
+                cell_amt.border = border
+                ws_opex.cell(current_row, 5, txn['description'][:80]).border = border
+                ws_opex.cell(current_row, 6, txn['method']).border = border
+                ws_opex.cell(current_row, 7, txn['reasoning'][:80]).border = border
+                current_row += 1
+            
+            # Subtotal
+            subtotal = cat_txns['amount'].sum()
+            ws_opex.cell(current_row, 3, f"{category} Subtotal").font = total_font
+            cell_sub = ws_opex.cell(current_row, 4, subtotal)
+            cell_sub.number_format = currency_fmt
+            cell_sub.font = total_font
+            cell_sub.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+            current_row += 1
         
-    for r, txn in enumerate(opex, 2):
-        ws_opex.cell(r, 1, txn['date'])
-        ws_opex.cell(r, 2, txn['source'])
-        ws_opex.cell(r, 3, txn['category'])
-        ws_opex.cell(r, 4, txn['amount']).number_format = currency_fmt
-        ws_opex.cell(r, 5, txn['description'])
-        ws_opex.cell(r, 6, txn['method'])
-        ws_opex.cell(r, 7, txn['reasoning'])
-
+        # Grand Total
+        current_row += 1
+        ws_opex.cell(current_row, 3, "GRAND TOTAL").font = Font(bold=True, size=12)
+        cell_grand = ws_opex.cell(current_row, 4, opex_amt)
+        cell_grand.number_format = currency_fmt
+        cell_grand.font = Font(bold=True, size=12)
+        cell_grand.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    
+    ws_opex.column_dimensions['A'].width = 12
+    ws_opex.column_dimensions['B'].width = 15
+    ws_opex.column_dimensions['C'].width = 20
+    ws_opex.column_dimensions['D'].width = 15
+    ws_opex.column_dimensions['E'].width = 40
+    ws_opex.column_dimensions['F'].width = 15
+    ws_opex.column_dimensions['G'].width = 40
+    
+    # === SHEET 4: CATEGORY BREAKDOWN ===
+    ws_cat = wb.create_sheet("Category Breakdown")
+    
+    ws_cat['A1'] = "SPEND CATEGORY BREAKDOWN"
+    ws_cat['A1'].font = title_font
+    ws_cat.merge_cells('A1:D1')
+    
+    # CAPEX Categories
+    ws_cat['A3'] = "CAPEX BY CATEGORY"
+    ws_cat['A3'].font = subtitle_font
+    
+    cat_headers = ['Category', 'Amount', '% of CAPEX', 'Transactions']
+    for c, h in enumerate(cat_headers, 1):
+        cell = ws_cat.cell(4, c, h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = border
+    
+    current_row = 5
+    if not capex_df.empty:
+        capex_by_cat = capex_df.groupby('category').agg({
+            'amount': 'sum',
+            'date': 'count'
+        }).sort_values('amount', ascending=False)
+        
+        for category, row in capex_by_cat.iterrows():
+            ws_cat.cell(current_row, 1, category).border = border
+            cell_amt = ws_cat.cell(current_row, 2, row['amount'])
+            cell_amt.number_format = currency_fmt
+            cell_amt.border = border
+            cell_pct = ws_cat.cell(current_row, 3, row['amount']/capex_amt if capex_amt else 0)
+            cell_pct.number_format = percent_fmt
+            cell_pct.border = border
+            ws_cat.cell(current_row, 4, int(row['date'])).border = border
+            current_row += 1
+    
+    # OPEX Categories
+    current_row += 2
+    ws_cat[f'A{current_row}'] = "OPEX BY CATEGORY"
+    ws_cat[f'A{current_row}'].font = subtitle_font
+    current_row += 1
+    
+    for c, h in enumerate(cat_headers, 1):
+        cell = ws_cat.cell(current_row, c, h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = border
+    
+    current_row += 1
+    if not opex_df.empty:
+        opex_by_cat = opex_df.groupby('category').agg({
+            'amount': 'sum',
+            'date': 'count'
+        }).sort_values('amount', ascending=False)
+        
+        for category, row in opex_by_cat.iterrows():
+            ws_cat.cell(current_row, 1, category).border = border
+            cell_amt = ws_cat.cell(current_row, 2, row['amount'])
+            cell_amt.number_format = currency_fmt
+            cell_amt.border = border
+            cell_pct = ws_cat.cell(current_row, 3, row['amount']/opex_amt if opex_amt else 0)
+            cell_pct.number_format = percent_fmt
+            cell_pct.border = border
+            ws_cat.cell(current_row, 4, int(row['date'])).border = border
+            current_row += 1
+    
+    ws_cat.column_dimensions['A'].width = 30
+    ws_cat.column_dimensions['B'].width = 18
+    ws_cat.column_dimensions['C'].width = 15
+    ws_cat.column_dimensions['D'].width = 15
+    
     # Save to buffer
     buffer = BytesIO()
     wb.save(buffer)
@@ -275,6 +461,10 @@ def create_excel(categorized_data):
 # --- MAIN APP ---
 
 def main():
+    # Initialize session state
+    if 'categorized_data' not in st.session_state:
+        st.session_state.categorized_data = None
+    
     # Sidebar
     with st.sidebar:
         st.header("Settings")
@@ -309,56 +499,64 @@ def main():
                 st.error(err)
         
         if categorized_data:
+            # Store in session state
+            st.session_state.categorized_data = categorized_data
             status_text.success("Analysis Complete!")
             progress_bar.progress(100)
-            
-            # 1. Summary Metrics
-            capex = [t for t in categorized_data if t['expense_type'] == 'CAPEX']
-            opex = [t for t in categorized_data if t['expense_type'] == 'OPEX']
-            
-            capex_total = sum(t['amount'] for t in capex)
-            opex_total = sum(t['amount'] for t in opex)
-            
-            st.divider()
-            m1, m2, m3 = st.columns(3)
-            with m1: st.metric("Total CAPEX", f"₹{capex_total:,.2f}")
-            with m2: st.metric("Total OPEX", f"₹{opex_total:,.2f}")
-            with m3: st.metric("Transactions", len(categorized_data))
-            
-            # 2. Category Analysis
-            st.divider()
-            st.subheader("📊 Category Analysis")
-            
-            c1, c2 = st.columns(2)
-            
-            with c1:
-                st.markdown("### CAPEX by Category")
-                if capex:
-                    capex_df = pd.DataFrame(capex)
-                    capex_chart = capex_df.groupby('category')['amount'].sum().sort_values(ascending=False)
-                    st.bar_chart(capex_chart)
-                    st.dataframe(capex_chart.reset_index().rename(columns={'amount': 'Amount (₹)'}), use_container_width=True)
-                else:
-                    st.info("No CAPEX transactions found.")
-            
-            with c2:
-                st.markdown("### OPEX by Category")
-                if opex:
-                    opex_df = pd.DataFrame(opex)
-                    opex_chart = opex_df.groupby('category')['amount'].sum().sort_values(ascending=False)
-                    st.bar_chart(opex_chart)
-                    st.dataframe(opex_chart.reset_index().rename(columns={'amount': 'Amount (₹)'}), use_container_width=True)
-            
-            # 3. Download
-            st.divider()
-            excel_file = create_excel(categorized_data)
-            st.download_button(
-                label="📥 Download Dognosis Report",
-                data=excel_file,
-                file_name=f"Dognosis_Spend_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
+    
+    # Display results if data exists in session state
+    if st.session_state.categorized_data:
+        categorized_data = st.session_state.categorized_data
+        
+        # 1. Summary Metrics
+        capex = [t for t in categorized_data if t['expense_type'] == 'CAPEX']
+        opex = [t for t in categorized_data if t['expense_type'] == 'OPEX']
+        
+        capex_total = sum(t['amount'] for t in capex)
+        opex_total = sum(t['amount'] for t in opex)
+        
+        st.divider()
+        st.subheader("📊 Financial Summary")
+        m1, m2, m3 = st.columns(3)
+        with m1: st.metric("Total CAPEX", f"₹{capex_total:,.2f}")
+        with m2: st.metric("Total OPEX", f"₹{opex_total:,.2f}")
+        with m3: st.metric("Transactions", len(categorized_data))
+        
+        # 2. Download Button (moved here to persist visualizations below)
+        st.divider()
+        excel_file = create_excel(categorized_data)
+        st.download_button(
+            label="📥 Download Dognosis Report (4 Sheets)",
+            data=excel_file,
+            file_name=f"Dognosis_Spend_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True
+        )
+        
+        # 3. Category Analysis (now persistent after download)
+        st.divider()
+        st.subheader("📈 Category Breakdown")
+        
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.markdown("### CAPEX by Category")
+            if capex:
+                capex_df = pd.DataFrame(capex)
+                capex_chart = capex_df.groupby('category')['amount'].sum().sort_values(ascending=False)
+                st.bar_chart(capex_chart)
+                st.dataframe(capex_chart.reset_index().rename(columns={'amount': 'Amount (₹)'}), use_container_width=True)
+            else:
+                st.info("No CAPEX transactions found.")
+        
+        with c2:
+            st.markdown("### OPEX by Category")
+            if opex:
+                opex_df = pd.DataFrame(opex)
+                opex_chart = opex_df.groupby('category')['amount'].sum().sort_values(ascending=False)
+                st.bar_chart(opex_chart)
+                st.dataframe(opex_chart.reset_index().rename(columns={'amount': 'Amount (₹)'}), use_container_width=True)
 
 if __name__ == "__main__":
     main()
